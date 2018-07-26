@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/knetic/govaluate"
 	"github.com/qntfy/jsonparser"
 )
 
@@ -43,11 +44,12 @@ type Config struct {
 var (
 	NonExistentPath = RequireError("Path does not exist")
 	jsonPathRe      = regexp.MustCompile("([^\\[\\]]+)\\[(.*?)\\]")
+	jsonFilterRe    = regexp.MustCompile(`\?\((.*)\)`)
 )
 
 // Given a json byte slice `data` and a kazaam `path` string, return the object at the path in data if it exists.
 func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
-	objectKeys := strings.Split(path, ".")
+	objectKeys := customSplit(path)
 	numOfInserts := 0
 	for element, k := range objectKeys {
 		// check the object key to see if it also contains an array reference
@@ -61,16 +63,7 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 			}
 			// if there's a wildcard array reference
 			if arrayKeyStr == "*" {
-				// ArrayEach setup
-				objectKeys[element+numOfInserts] = objKey
-				beforePath := objectKeys[:element+numOfInserts+1]
-				newPath := strings.Join(objectKeys[element+numOfInserts+1:], ".")
-				var results [][]byte
-
-				// use jsonparser.ArrayEach to copy the array into results
-				_, err := jsonparser.ArrayEach(data, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-					results = append(results, HandleUnquotedStrings(value, dataType))
-				}, beforePath...)
+				results, newPath, err := getArrayResults(data, objectKeys, objKey, element+numOfInserts)
 				if err == jsonparser.KeyPathNotFoundError {
 					if pathRequired {
 						return nil, NonExistentPath
@@ -79,33 +72,79 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 					return nil, err
 				}
 
-				// GetJSONRaw() the rest of path for each element in results
+				output, err := lookupAndWriteMulti(results, newPath, pathRequired)
+				if err != nil {
+					return nil, err
+				}
+				return output, nil
+			} else if filterPattern := jsonFilterRe.FindStringSubmatch(arrayKeyStr); filterPattern != nil {
+				// MODIFICATIONS --- FILTER SUPPORT
+				// right now we only support filter expressions of the form ?(@.some.json.path Op "someData")
+				// Op must be a boolean operator: '==', '<' are fine, '+', '%' are not.  Spaces ARE required
+
+				// get the filter jsonpath expression
+				filterParts := strings.Split(filterPattern[1], " ")
+				filterPath := filterParts[0][2:]
+				var filterObjs [][]byte
+				var filteredResults [][]byte
+
+				// get all the objects in the array
+				results, newPath, err := getArrayResults(data, objectKeys, objKey, element+numOfInserts)
+				if err != jsonparser.KeyPathNotFoundError {
+					if pathRequired {
+						return nil, NonExistentPath
+					}
+				} else if err != nil {
+					return nil, err
+				}
+
+				// evaluate the jsonpath filter jsonpath for each index
 				if newPath != "" {
-					for i, value := range results {
-						intermediate, err := getJSONRaw(value, newPath, pathRequired)
-						if err == jsonparser.KeyPathNotFoundError {
-							if pathRequired {
-								return nil, NonExistentPath
+					// we are filtering against a list of objects, lookup the data recursively
+					for _, v := range results {
+						intermediate, err := getJSONRaw(v, filterPath, pathRequired)
+						if err != nil {
+							if err == jsonparser.KeyPathNotFoundError {
+								// this is fine, we will just filter these out
+								filterObjs = append(filterObjs, []byte{})
 							}
-						} else if err != nil {
 							return nil, err
 						}
-						results[i] = intermediate
+						filterObjs = append(filterObjs, intermediate)
+					}
+
+				} else if filterPath == "" {
+					// we are filtering against a list of primitives - we won't match any non-empty filterPath
+					for _, v := range results {
+						filterObjs = append(filterObjs, v)
 					}
 				}
 
-				// copy into raw []byte format and return
-				var buffer bytes.Buffer
-				buffer.WriteByte('[')
-				for i := 0; i < len(results)-1; i++ {
-					buffer.Write(results[i])
-					buffer.WriteByte(',')
+				// evaluate the filter expression
+				for i, v := range filterObjs {
+					filterParts[0] = string(v)
+					exprString := strings.Join(filterParts, " ")
+					// filter the objects based on the results
+					expr, err := govaluate.NewEvaluableExpression(exprString)
+					if err != nil {
+						return nil, err
+					}
+					result, err := expr.Evaluate(nil)
+					if err != nil {
+						return nil, err
+					}
+					if result.(bool) {
+						filteredResults = append(filteredResults, results[i])
+					}
 				}
-				if len(results) > 0 {
-					buffer.Write(results[len(results)-1])
+
+				// process the filtered elementd
+				output, err := lookupAndWriteMulti(filteredResults, newPath, pathRequired)
+				if err != nil {
+					return nil, err
 				}
-				buffer.WriteByte(']')
-				return buffer.Bytes(), nil
+				return output, nil
+
 			}
 			// separate the array key as a new element in objectKeys
 			objectKeys = makePathWithIndex(arrayKeyStr, objKey, objectKeys, element+numOfInserts)
@@ -139,7 +178,7 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 // setJSONRaw sets the value at a key and handles array indexing
 func setJSONRaw(data, out []byte, path string) ([]byte, error) {
 	var err error
-	splitPath := strings.Split(path, ".")
+	splitPath := customSplit(path)
 	numOfInserts := 0
 
 	for element, k := range splitPath {
@@ -211,7 +250,7 @@ func setJSONRaw(data, out []byte, path string) ([]byte, error) {
 // delJSONRaw deletes the value at a path and handles array indexing
 func delJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 	var err error
-	splitPath := strings.Split(path, ".")
+	splitPath := customSplit(path)
 	numOfInserts := 0
 
 	for element, k := range splitPath {
@@ -255,7 +294,9 @@ func delJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 // validateArrayKeyString is a helper function to make sure the array index is
 // legal
 func validateArrayKeyString(arrayKeyStr string) error {
-	if arrayKeyStr != "*" && arrayKeyStr != "+" && arrayKeyStr != "-" {
+	if filterPattern := jsonFilterRe.FindStringSubmatch(arrayKeyStr); filterPattern == nil &&
+		arrayKeyStr != "*" && arrayKeyStr != "+" && arrayKeyStr != "-" {
+
 		val, err := strconv.Atoi(arrayKeyStr)
 		if val < 0 || err != nil {
 			return ParseError(fmt.Sprintf("Warn: Unable to coerce index to integer: %v", arrayKeyStr))
@@ -292,4 +333,75 @@ func HandleUnquotedStrings(value []byte, dt jsonparser.ValueType) []byte {
 		value = bookend(tmp, '"', '"')
 	}
 	return value
+}
+
+// Given the data, find and return all objects in the array referenced by the current index in the jsonpath, as
+// well as the remaining path we want to use against each object
+// This function is dumb to whether or not the path needs to exist in the data
+func getArrayResults(data []byte, objectKeys []string, objKey string, index int) ([][]byte, string, error) {
+	// ArrayEach setup
+	objectKeys[index] = objKey
+	beforePath := objectKeys[:index+1]
+	newPath := strings.Join(objectKeys[index+1:], ".")
+	var results [][]byte
+
+	// use jsonparser.ArrayEach to copy the array into results
+	_, err := jsonparser.ArrayEach(data, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+		results = append(results, HandleUnquotedStrings(value, dataType))
+	}, beforePath...)
+	if err != nil {
+		return nil, "", err
+	}
+	return results, newPath, nil
+}
+
+// performs lookups of the path in each of the results - top level lookups ($) are represented by an empty path
+func lookupAndWriteMulti(dataObjects [][]byte, path string, pathRequired bool) ([]byte, error) {
+	if path != "" {
+		for i, value := range dataObjects {
+			intermediate, err := getJSONRaw(value, path, pathRequired)
+			if err != nil {
+				return nil, err
+			}
+			dataObjects[i] = intermediate
+		}
+	}
+
+	// copy into raw []byte format and return
+	var buffer bytes.Buffer
+	buffer.WriteByte('[')
+	for i := 0; i < len(dataObjects)-1; i++ {
+		buffer.Write(dataObjects[i])
+		buffer.WriteByte(',')
+	}
+	if len(dataObjects) > 0 {
+		buffer.Write(dataObjects[len(dataObjects)-1])
+	}
+	buffer.WriteByte(']')
+	return buffer.Bytes(), nil
+}
+
+// splits on '.', except for those nested inside parenthesis
+func customSplit(s string) []string {
+	var result []string
+	var cur string
+	parenDepth := 0
+	for _, v := range strings.Split(s, "") {
+		if v == "(" {
+			parenDepth++
+		}
+		if v == ")" && parenDepth > 0 {
+			parenDepth--
+		}
+		if v == "." && parenDepth == 0 {
+			result = append(result, cur)
+			cur = ""
+		} else {
+			cur += v
+		}
+	}
+	if cur != "" {
+		result = append(result, cur)
+	}
+	return result
 }
