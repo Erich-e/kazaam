@@ -102,15 +102,18 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 				if newPath != "" {
 					// we are filtering against a list of objects, lookup the data recursively
 					for _, v := range results {
-						intermediate, err := getJSONRaw(v, filterPath, pathRequired)
+						intermediate, err := getJSONRaw(v, filterPath, true)
 						if err != nil {
-							if err == jsonparser.KeyPathNotFoundError {
-								// this is fine, we will just filter these out
-								filterObjs = append(filterObjs, []byte{})
+							if err == NonExistentPath {
+								// this is fine, we'll just filter these out
+								filterObjs = append(filterObjs, nil)
+							} else {
+								return nil, err
 							}
-							return nil, err
+						} else {
+							fmt.Println(string(intermediate))
+							filterObjs = append(filterObjs, intermediate)
 						}
-						filterObjs = append(filterObjs, intermediate)
 					}
 
 				} else if filterPath == "" {
@@ -120,21 +123,23 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 					}
 				}
 
-				// evaluate the filter expression
+				// evaluate the filter
 				for i, v := range filterObjs {
-					filterParts[0] = string(v)
-					exprString := strings.Join(filterParts, " ")
-					// filter the objects based on the results
-					expr, err := govaluate.NewEvaluableExpression(exprString)
-					if err != nil {
-						return nil, err
-					}
-					result, err := expr.Evaluate(nil)
-					if err != nil {
-						return nil, err
-					}
-					if result.(bool) {
-						filteredResults = append(filteredResults, results[i])
+					if v != nil {
+						filterParts[0] = string(v)
+						exprString := strings.Join(filterParts, " ")
+						// filter the objects based on the results
+						expr, err := govaluate.NewEvaluableExpression(exprString)
+						if err != nil {
+							return nil, err
+						}
+						result, err := expr.Evaluate(nil)
+						if err != nil {
+							return nil, err
+						}
+						if result.(bool) {
+							filteredResults = append(filteredResults, results[i])
+						}
 					}
 				}
 
