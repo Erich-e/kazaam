@@ -237,7 +237,7 @@ func TestShiftWithEndArrayAccess(t *testing.T) {
 
 func TestShiftWithArrayFilter(t *testing.T) {
 	spec := `{"object.result": "object[?(@.id == 'test')].value"}`
-	jsonIn := `{"object": [{ "id": "test", "value": "success" }, { "id": "fail", "value": "fail" }]}`
+	jsonIn := `{"object": [{"id": "test", "value": "success"}, {"id": "fail", "value": "fail"}]}`
 	jsonOut := `{"object":{"result":["success"]}}`
 
 	cfg := getConfig(spec, false)
@@ -261,7 +261,7 @@ func TestShiftWithArrayFilter(t *testing.T) {
 
 func TestShiftWithArrayFilterNoResults(t *testing.T) {
 	spec := `{"object.result": "object[?(@.id.non.existent == 'test')].value"}`
-	jsonIn := `{"object": [{ "id": "fail", "value": "fail" }]}`
+	jsonIn := `{"object": [{ id": "fail", "value": "fail"}]}`
 	jsonOut := `{"object":{"result":[]}}`
 
 	cfg := getConfig(spec, false)

@@ -141,6 +141,11 @@ func TestGetJSONRaw(t *testing.T) {
 		{[]byte(`{"data":[{"key": "value"}, {"key": "value"}]}`), "data[*].key", true, []byte(`["value","value"]`)},
 		{[]byte(`{"data":[{"key": "value"}, {"key": "otherValue"}]}`), "data[1].key", true, []byte(`"otherValue"`)},
 		{[]byte(`{"data":{"subData":[{"key": "value"}, {"key": "value"}]}}`), "data.subData[*].key", true, []byte(`["value","value"]`)},
+		{[]byte(`{"data":[{"id": "test", "value": "success"}, {"id": "fail", "value": "fail"}]}`), "data[?(@.id == 'test')].value", true, []byte(`["success"]`)},
+		{[]byte(`{"data":[{"id": "fail", "value": "fail"}]}`), "data[?(@.id.non.existent == 'test')].value", true, []byte(`[]`)},
+		{[]byte(`{"data":[{"id": 1, "value": "success"}, {"id": 2, "value", "fail"}]}`), "data[?(@.id + 1 < 3)].value", true, []byte(`["success"]`)},
+		{[]byte(`{"data":[{"special": "abc", "value": "success"}, {"value": "fail"}]}`), "data[?(@.special)].value", true, []byte(`["success"]`)},
+		{[]byte(`{"data":[1, 2, 3]}`), "data[?(@ < 3)]", true, []byte("[1, 2]")},
 	}
 	for _, testItem := range getPathTests {
 		actual, _ := getJSONRaw(testItem.inputData, testItem.path, testItem.required)
