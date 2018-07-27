@@ -44,7 +44,7 @@ type Config struct {
 var (
 	NonExistentPath = RequireError("Path does not exist")
 	jsonPathRe      = regexp.MustCompile("([^\\[\\]]+)\\[(.*?)\\]")
-	jsonFilterRe    = regexp.MustCompile(`\?\((.*)\)`)
+	jsonFilterRe    = regexp.MustCompile(`\?\(@.*\)`)
 )
 
 // Given a json byte slice `data` and a kazaam `path` string, return the object at the path in data if it exists.
@@ -77,20 +77,23 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 					return nil, err
 				}
 				return output, nil
-			} else if filterPattern := jsonFilterRe.FindStringSubmatch(arrayKeyStr); filterPattern != nil {
+			} else if filterPattern := jsonFilterRe.FindString(arrayKeyStr); filterPattern != "" {
 				// MODIFICATIONS --- FILTER SUPPORT
 				// right now we only support filter expressions of the form ?(@.some.json.path Op "someData")
 				// Op must be a boolean operator: '==', '<' are fine, '+', '%' are not.  Spaces ARE required
 
 				// get the filter jsonpath expression
-				filterParts := strings.Split(filterPattern[1], " ")
-				filterPath := filterParts[0][2:]
+				filterPattern = filterPattern[2 : len(filterPattern)-1]
+				filterParts := strings.Split(filterPattern, " ")
+				var filterPath string
+				if len(filterParts[0]) > 2 {
+					filterPath = filterParts[0][2:]
+				}
 				var filterObjs [][]byte
 				var filteredResults [][]byte
-
 				// get all the objects in the array
 				results, newPath, err := getArrayResults(data, objectKeys, objKey, element+numOfInserts)
-				if err != jsonparser.KeyPathNotFoundError {
+				if err == jsonparser.KeyPathNotFoundError {
 					if pathRequired {
 						return nil, NonExistentPath
 					}
@@ -111,11 +114,9 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 								return nil, err
 							}
 						} else {
-							fmt.Println(string(intermediate))
 							filterObjs = append(filterObjs, intermediate)
 						}
 					}
-
 				} else if filterPath == "" {
 					// we are filtering against a list of primitives - we won't match any non-empty filterPath
 					for _, v := range results {
@@ -137,7 +138,9 @@ func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 						if err != nil {
 							return nil, err
 						}
-						if result.(bool) {
+						// We pass through the filter if the filter is a boolean expression
+						// If the filter is not a boolean expression, just pass everything through
+						if accepted, ok := result.(bool); accepted || !ok {
 							filteredResults = append(filteredResults, results[i])
 						}
 					}
@@ -299,7 +302,7 @@ func delJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 // validateArrayKeyString is a helper function to make sure the array index is
 // legal
 func validateArrayKeyString(arrayKeyStr string) error {
-	if filterPattern := jsonFilterRe.FindStringSubmatch(arrayKeyStr); filterPattern == nil &&
+	if filterPattern := jsonFilterRe.FindString(arrayKeyStr); filterPattern == "" &&
 		arrayKeyStr != "*" && arrayKeyStr != "+" && arrayKeyStr != "-" {
 
 		val, err := strconv.Atoi(arrayKeyStr)
