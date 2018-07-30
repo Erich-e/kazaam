@@ -234,3 +234,51 @@ func TestShiftWithEndArrayAccess(t *testing.T) {
 		t.FailNow()
 	}
 }
+
+func TestShiftWithArrayFilter(t *testing.T) {
+	spec := `{"object.result": "object[?(@.id == 'test')].value"}`
+	jsonIn := `{"object": [{"id": "test", "value": "success"}, {"id": "fail", "value": "fail"}]}`
+	jsonOut := `{"object":{"result":["success"]}}`
+
+	cfg := getConfig(spec, false)
+	kazaamOut, err := getTransformTestWrapper(Shift, cfg, jsonIn)
+
+	if err != nil {
+		t.Error("Error on transform.")
+		t.Log("Expected: ", jsonOut)
+		t.Log("Error: ", err.Error())
+		t.FailNow()
+	}
+
+	areEqual, _ := checkJSONBytesEqual(kazaamOut, []byte(jsonOut))
+	if !areEqual {
+		t.Error("Transformed data does not match expectation.")
+		t.Log("Expected:   ", jsonOut)
+		t.Log("Actual:     ", string(kazaamOut))
+		t.FailNow()
+	}
+}
+
+func TestShiftWithArrayFilterNoResults(t *testing.T) {
+	spec := `{"object.result": "object[?(@.id.non.existent == 'test')].value"}`
+	jsonIn := `{"object": [{ id": "fail", "value": "fail"}]}`
+	jsonOut := `{"object":{"result":[]}}`
+
+	cfg := getConfig(spec, false)
+	kazaamOut, err := getTransformTestWrapper(Shift, cfg, jsonIn)
+
+	if err != nil {
+		t.Error("Error on transform.", err.Error())
+		t.Log("Expected: ", jsonOut)
+		t.Log("Error: ", err.Error())
+		t.FailNow()
+	}
+
+	areEqual, _ := checkJSONBytesEqual(kazaamOut, []byte(jsonOut))
+	if !areEqual {
+		t.Error("Transformed data does not match expectation.")
+		t.Log("Expected:   ", jsonOut)
+		t.Log("Actual:     ", string(kazaamOut))
+		t.FailNow()
+	}
+}

@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"testing"
 
+	// MODIFICATIONS -- USE IMPORT OF MODIFIED FILES
+	"github.com/erich-e/kazaam/transform"
 	"github.com/qntfy/jsonparser"
-	"github.com/qntfy/kazaam/transform"
 )
 
 func TestDefaultKazaamGetUnknownTransform(t *testing.T) {
