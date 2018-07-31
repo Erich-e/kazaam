@@ -44,119 +44,124 @@ type Config struct {
 var (
 	NonExistentPath = RequireError("Path does not exist")
 	jsonPathRe      = regexp.MustCompile("([^\\[\\]]+)\\[(.*?)\\]")
+	jsonArrayRe     = regexp.MustCompile(`\[[^\]]*\]`)
 	jsonFilterRe    = regexp.MustCompile(`\?\(@.*\)`)
 )
 
 // Given a json byte slice `data` and a kazaam `path` string, return the object at the path in data if it exists.
 func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 	objectKeys := customSplit(path)
-	numOfInserts := 0
 	for element, k := range objectKeys {
 		// check the object key to see if it also contains an array reference
 		arrayRefs := jsonPathRe.FindAllStringSubmatch(k, -1)
 		if arrayRefs != nil && len(arrayRefs) > 0 {
-			objKey := arrayRefs[0][1]      // the key
-			arrayKeyStr := arrayRefs[0][2] // the array index
-			err := validateArrayKeyString(arrayKeyStr)
+			arrayKeyStrs := jsonArrayRe.FindAllString(k, -1)
+			extracted := false
+			objKey := arrayRefs[0][1] // the key
+			results, newPath, err := getArrayResults(data, objectKeys, objKey, element)
+			if err == jsonparser.KeyPathNotFoundError {
+				if pathRequired {
+					return nil, NonExistentPath
+				}
+			} else if err != nil {
+				return nil, err
+			}
+			for _, arrayKeyStr := range arrayKeyStrs {
+				// trim the square brackets
+				arrayKeyStr = arrayKeyStr[1 : len(arrayKeyStr)-1]
+				err = validateArrayKeyString(arrayKeyStr)
+				if err != nil {
+					return nil, err
+				}
+				// if there's a wildcard array reference
+				if arrayKeyStr == "*" {
+					// We won't filter anything with a wildcard
+					continue
+				} else if filterPattern := jsonFilterRe.FindString(arrayKeyStr); filterPattern != "" {
+					// MODIFICATIONS --- FILTER SUPPORT
+					// right now we only support filter expressions of the form ?(@.some.json.path Op "someData")
+					// Op must be a boolean operator: '==', '<' are fine, '+', '%' are not.  Spaces ARE required
+
+					// get the filter jsonpath expression
+					filterPattern = filterPattern[2 : len(filterPattern)-1]
+					filterParts := strings.Split(filterPattern, " ")
+					var filterPath string
+					if len(filterParts[0]) > 2 {
+						filterPath = filterParts[0][2:]
+					}
+					var filterObjs [][]byte
+					var filteredResults [][]byte
+
+					// evaluate the jsonpath filter jsonpath for each index
+					if newPath != "" {
+						// we are filtering against a list of objects, lookup the data recursively
+						for _, v := range results {
+							intermediate, err := getJSONRaw(v, filterPath, true)
+							if err != nil {
+								if err == NonExistentPath {
+									// this is fine, we'll just filter these out
+									filterObjs = append(filterObjs, nil)
+								} else {
+									return nil, err
+								}
+							} else {
+								filterObjs = append(filterObjs, intermediate)
+							}
+						}
+					} else if filterPath == "" {
+						// we are filtering against a list of primitives - we won't match any non-empty filterPath
+						for _, v := range results {
+							filterObjs = append(filterObjs, v)
+						}
+					}
+
+					// evaluate the filter
+					for i, v := range filterObjs {
+						if v != nil {
+							filterParts[0] = string(v)
+							exprString := strings.Join(filterParts, " ")
+							// filter the objects based on the results
+							expr, err := govaluate.NewEvaluableExpression(exprString)
+							if err != nil {
+								return nil, err
+							}
+							result, err := expr.Evaluate(nil)
+							if err != nil {
+								return nil, err
+							}
+							// We pass through the filter if the filter is a boolean expression
+							// If the filter is not a boolean expression, just pass everything through
+							if accepted, ok := result.(bool); accepted || !ok {
+								filteredResults = append(filteredResults, results[i])
+							}
+						}
+					}
+
+					// Set the results for the next pass
+					results = filteredResults
+				} else {
+					index, err := strconv.ParseInt(arrayKeyStr, 10, 64)
+					if err != nil {
+						return nil, err
+					}
+					if index < int64(len(results)) {
+						results = [][]byte{results[index]}
+					} else {
+						results = [][]byte{}
+					}
+					extracted = true
+				}
+			}
+			output, err := lookupAndWriteMulti(results, newPath, pathRequired)
 			if err != nil {
 				return nil, err
 			}
-			// if there's a wildcard array reference
-			if arrayKeyStr == "*" {
-				results, newPath, err := getArrayResults(data, objectKeys, objKey, element+numOfInserts)
-				if err == jsonparser.KeyPathNotFoundError {
-					if pathRequired {
-						return nil, NonExistentPath
-					}
-				} else if err != nil {
-					return nil, err
-				}
-
-				output, err := lookupAndWriteMulti(results, newPath, pathRequired)
-				if err != nil {
-					return nil, err
-				}
-				return output, nil
-			} else if filterPattern := jsonFilterRe.FindString(arrayKeyStr); filterPattern != "" {
-				// MODIFICATIONS --- FILTER SUPPORT
-				// right now we only support filter expressions of the form ?(@.some.json.path Op "someData")
-				// Op must be a boolean operator: '==', '<' are fine, '+', '%' are not.  Spaces ARE required
-
-				// get the filter jsonpath expression
-				filterPattern = filterPattern[2 : len(filterPattern)-1]
-				filterParts := strings.Split(filterPattern, " ")
-				var filterPath string
-				if len(filterParts[0]) > 2 {
-					filterPath = filterParts[0][2:]
-				}
-				var filterObjs [][]byte
-				var filteredResults [][]byte
-				// get all the objects in the array
-				results, newPath, err := getArrayResults(data, objectKeys, objKey, element+numOfInserts)
-				if err == jsonparser.KeyPathNotFoundError {
-					if pathRequired {
-						return nil, NonExistentPath
-					}
-				} else if err != nil {
-					return nil, err
-				}
-
-				// evaluate the jsonpath filter jsonpath for each index
-				if newPath != "" {
-					// we are filtering against a list of objects, lookup the data recursively
-					for _, v := range results {
-						intermediate, err := getJSONRaw(v, filterPath, true)
-						if err != nil {
-							if err == NonExistentPath {
-								// this is fine, we'll just filter these out
-								filterObjs = append(filterObjs, nil)
-							} else {
-								return nil, err
-							}
-						} else {
-							filterObjs = append(filterObjs, intermediate)
-						}
-					}
-				} else if filterPath == "" {
-					// we are filtering against a list of primitives - we won't match any non-empty filterPath
-					for _, v := range results {
-						filterObjs = append(filterObjs, v)
-					}
-				}
-
-				// evaluate the filter
-				for i, v := range filterObjs {
-					if v != nil {
-						filterParts[0] = string(v)
-						exprString := strings.Join(filterParts, " ")
-						// filter the objects based on the results
-						expr, err := govaluate.NewEvaluableExpression(exprString)
-						if err != nil {
-							return nil, err
-						}
-						result, err := expr.Evaluate(nil)
-						if err != nil {
-							return nil, err
-						}
-						// We pass through the filter if the filter is a boolean expression
-						// If the filter is not a boolean expression, just pass everything through
-						if accepted, ok := result.(bool); accepted || !ok {
-							filteredResults = append(filteredResults, results[i])
-						}
-					}
-				}
-
-				// process the filtered elementd
-				output, err := lookupAndWriteMulti(filteredResults, newPath, pathRequired)
-				if err != nil {
-					return nil, err
-				}
-				return output, nil
-
+			// if we have access a specific index, we want to extract the value from the array
+			// we just do this manually
+			if extracted {
+				output = output[1 : len(output)-1]
 			}
-			// separate the array key as a new element in objectKeys
-			objectKeys = makePathWithIndex(arrayKeyStr, objKey, objectKeys, element+numOfInserts)
-			numOfInserts++
+			return output, nil
 		} else {
 			// no array reference, good to go
 			continue

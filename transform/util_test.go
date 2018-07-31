@@ -146,6 +146,7 @@ func TestGetJSONRaw(t *testing.T) {
 		{[]byte(`{"data":[{"id": 1, "value": "success"}, {"id": 2, "value", "fail"}]}`), "data[?(@.id + 1 < 3)].value", true, []byte(`["success"]`)},
 		{[]byte(`{"data":[{"special": "abc", "value": "success"}, {"value": "fail"}]}`), "data[?(@.special)].value", true, []byte(`["success"]`)},
 		{[]byte(`{"data":[1, 2, 3]}`), "data[?(@ < 3)]", true, []byte("[1, 2]")},
+		{[]byte(`{"data":[{"id": "test", "value": "success"}, {"id": "fail", "value": "fail"}]}`), "data[?(@.id == 'test')][0].value", true, []byte(`"success"`)},
 	}
 	for _, testItem := range getPathTests {
 		actual, _ := getJSONRaw(testItem.inputData, testItem.path, testItem.required)
