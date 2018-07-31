@@ -48,6 +48,18 @@ var (
 	jsonFilterRe    = regexp.MustCompile(`\?\(@.*\)`)
 )
 
+// GetJSONRaw makes getJSONRaw public
+// Given a json byte slice `data` and a kazaam `path` string, return the object at the path in data if it exists.
+func GetJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
+	return getJSONRaw(data, path, pathRequired)
+}
+
+// SetJSONRaw makes setJSONRaw public
+// setJSONRaw sets the value at a key and handles array indexing
+func SetJSONRaw(data, out []byte, path string) ([]byte, error) {
+	return setJSONRaw(data, out, path)
+}
+
 // Given a json byte slice `data` and a kazaam `path` string, return the object at the path in data if it exists.
 func getJSONRaw(data []byte, path string, pathRequired bool) ([]byte, error) {
 	objectKeys := customSplit(path)
